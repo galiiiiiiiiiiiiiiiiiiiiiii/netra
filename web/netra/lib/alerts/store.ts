@@ -3,15 +3,20 @@ import path from "node:path";
 
 export type PersistedAlertState = {
   baselineReady?: boolean;
+  routerOnline?: boolean;
+  routerFailureStreak?: number;
+  routerSuccessStreak?: number;
   interfaces: Record<string, string>;
   ppp: Record<string, string>;
   duplicateIps: string[];
+  routerLogFingerprints?: string[];
+  routerLogBaselineReady?: boolean;
   events: Array<{
     id: string;
     title: string;
     detail: string;
     severity: "critical" | "warning" | "info";
-    source: "PPP" | "Interface" | "IP audit";
+    source: "PPP" | "Interface" | "IP audit" | "Router";
     createdAt: string;
     fingerprint: string;
   }>;
@@ -23,9 +28,14 @@ const stateFile = path.join(dataDirectory, "alerts.json");
 function emptyState(): PersistedAlertState {
   return {
     baselineReady: false,
+    routerOnline: undefined,
+    routerFailureStreak: 0,
+    routerSuccessStreak: 0,
     interfaces: {},
     ppp: {},
     duplicateIps: [],
+    routerLogFingerprints: [],
+    routerLogBaselineReady: false,
     events: [],
   };
 }

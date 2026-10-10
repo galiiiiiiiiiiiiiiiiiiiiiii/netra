@@ -375,6 +375,15 @@ function Dashboard() {
         throw new Error(data.error || "Data traffic tidak valid");
       }
 
+      if (Array.isArray(data.history) && data.history.length > 0) {
+        const history = data.history.slice(-TRAFFIC_MAX_POINTS);
+        setTrafficHistory(history);
+        localStorage.setItem(
+          TRAFFIC_HISTORY_STORAGE_KEY,
+          JSON.stringify(history),
+        );
+      }
+
       const now = Date.now();
 
       const result: TrafficInterface[] = data.interfaces.map((item: any) => {
@@ -659,6 +668,17 @@ function Dashboard() {
     (item) => item.status === "online",
   ).length;
 
+  const orderedCustomers = [...customers].sort((left, right) => {
+    const statusRank = (status?: string) => {
+      const normalizedStatus = status?.toLowerCase();
+      if (normalizedStatus === "online") return 0;
+      if (normalizedStatus === "offline") return 1;
+      return 2;
+    };
+
+    return statusRank(left.status) - statusRank(right.status);
+  });
+
   const totalRxPackets = interfaces.reduce(
     (total, item) => total + item.rxPackets,
     0,
@@ -711,7 +731,12 @@ function Dashboard() {
   const graphWidth = 1000;
   const graphHeight = 300;
   const graphViewHeight = graphHeight + 28;
-  const trafficEndDate = new Date();
+  const latestTrafficTimestamp = trafficHistory.at(-1)?.timestamp ?? Date.now();
+  const trafficDataIsStale =
+    Date.now() - latestTrafficTimestamp > TRAFFIC_SAMPLE_INTERVAL * 2;
+  const trafficEndDate = new Date(
+    trafficDataIsStale ? latestTrafficTimestamp : Date.now(),
+  );
   trafficEndDate.setSeconds(0, 0);
   trafficEndDate.setMinutes(Math.floor(trafficEndDate.getMinutes() / 5) * 5);
   const trafficEndTimestamp = trafficEndDate.getTime();
@@ -1199,6 +1224,17 @@ function Dashboard() {
 
         .table-wrap {
           overflow-x: auto;
+        }
+
+        .ppp-table-wrap {
+          max-height: 420px;
+          overflow: auto;
+        }
+
+        .ppp-table-wrap th {
+          position: sticky;
+          top: 0;
+          z-index: 1;
         }
 
         table {
@@ -1733,7 +1769,13 @@ function Dashboard() {
                   </div>
                 </div>
 
-                <button className="panel-link">View All →</button>
+                <button
+                  className="panel-link"
+                  type="button"
+                  onClick={() => window.location.assign("/interfaces")}
+                >
+                  View All →
+                </button>
               </div>
 
               <div className="table-wrap">
@@ -1898,7 +1940,7 @@ function Dashboard() {
               </div>
             </div>
 
-            <div className="table-wrap">
+            <div className="table-wrap ppp-table-wrap">
               {loading ? (
                 <div className="loading">Loading MikroTik data...</div>
               ) : customers.length === 0 ? (
@@ -1916,9 +1958,15 @@ function Dashboard() {
                   </thead>
 
                   <tbody>
-                    {customers.slice(0, 10).map((customer, index) => {
-                      const online =
-                        customer.status?.toLowerCase() === "online";
+                    {orderedCustomers.map((customer, index) => {
+                      const normalizedStatus = customer.status?.toLowerCase();
+                      const online = normalizedStatus === "online";
+                      const disabled = normalizedStatus === "disabled";
+                      const statusLabel = disabled
+                        ? "Disabled"
+                        : online
+                          ? "Online"
+                          : "Offline";
 
                       return (
                         <tr key={`${customer.name}-${index}`}>
@@ -1938,7 +1986,7 @@ function Dashboard() {
                                 }`}
                               />
 
-                              {online ? "Online" : "Offline"}
+                              {statusLabel}
                             </span>
                           </td>
 

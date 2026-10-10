@@ -1,5 +1,7 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
+const { mkdir, readFile, writeFile } = require("fs/promises");
+const path = require("path");
 
 const NETRA_BASE_URL = (
   process.env.NETRA_BASE_URL || "http://localhost:3000"
@@ -8,6 +10,7 @@ const NETRA_ALERT_URL = `${NETRA_BASE_URL}/api/alerts/bot`;
 const NETRA_LOG_URL = `${NETRA_BASE_URL}/api/alerts/logs/bot`;
 const NETRA_PPP_URL = `${NETRA_BASE_URL}/api/ppp-secrets/bot`;
 const NETRA_INTERFACES_URL = `${NETRA_BASE_URL}/api/mikrotik/interfaces/bot`;
+const NETRA_DASHBOARD_URL = `${NETRA_BASE_URL}/api/mikrotik/dashboard`;
 const ROUTER_API_KEY = process.env.ROUTER_API_KEY;
 const ROUTER_URL = (
   process.env.ROUTER_BASE_URL || "http://localhost:20128/v1"
@@ -18,6 +21,8 @@ const seenAlertIds = new Set();
 const conversations = new Map();
 let alertsInitialized = false;
 let missingConfigLogged = false;
+let lastNetraLogs = [];
+const cacheFile = path.join(__dirname, "data", "discord-netra-cache.json");
 
 const client = new Client({
   intents: [
@@ -31,6 +36,26 @@ const client = new Client({
 function trimSet(set, limit = 200) {
   while (set.size > limit) {
     set.delete(set.values().next().value);
+  }
+}
+
+async function loadNetraCache() {
+  try {
+    const data = JSON.parse(await readFile(cacheFile, "utf8"));
+    lastNetraLogs = Array.isArray(data.logs) ? data.logs : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("NETRA CACHE READ ERROR:", error.message);
+    }
+  }
+}
+
+async function saveNetraCache(logs) {
+  try {
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(cacheFile, `${JSON.stringify({ logs }, null, 2)}\n`);
+  } catch (error) {
+    console.error("NETRA CACHE WRITE ERROR:", error.message);
   }
 }
 
@@ -60,7 +85,9 @@ async function fetchNetraLogs() {
   }
 
   const data = await response.json();
-  return Array.isArray(data.logs) ? data.logs : [];
+  lastNetraLogs = Array.isArray(data.logs) ? data.logs : [];
+  await saveNetraCache(lastNetraLogs);
+  return lastNetraLogs;
 }
 
 async function fetchNetraPPPSecrets() {
@@ -91,6 +118,18 @@ async function fetchNetraInterfaces() {
 
   const data = await response.json();
   return Array.isArray(data.interfaces) ? data.interfaces : [];
+}
+
+async function fetchNetraDashboard() {
+  const response = await fetch(NETRA_DASHBOARD_URL, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Netra dashboard API gagal (${response.status})`);
+  }
+
+  return response.json();
 }
 
 async function sendAlertToDiscord(event) {
@@ -164,6 +203,8 @@ async function askRouter(channelId, question, context) {
         "Jawab dalam Bahasa Indonesia, ringkas dan praktis.",
         "Data di bagian KONTEKS NETRA adalah hasil fetch terbaru dari router.",
         "Jika user menanyakan log terbaru, gunakan bagian LOG TERBARU dan jawab berdasarkan isinya.",
+        "Jika user menanyakan uptime, gunakan bagian STATUS ROUTER dan sebutkan uptime aktualnya.",
+        "Jika user menanyakan router mati, reboot, restart, startup, boot, atau shutdown, gunakan LOG TERBARU untuk mencari bukti; jika tidak ada log yang membuktikan, katakan tidak ada bukti langsung.",
         "Jika log terbaru berisi login/logout biasa, katakan itu aktivitas normal dan jelaskan waktunya.",
         "Jika user menanyakan PPP Secret, gunakan bagian PPP SECRET dan jangan mengatakan data tidak tersedia jika bagian itu berisi data.",
         "Password PPP Secret tidak pernah tersedia dan tidak boleh diminta atau ditampilkan.",
@@ -216,6 +257,22 @@ function formatNetraContext(context) {
   const interfaces = Array.isArray(context.interfaces)
     ? context.interfaces
     : [];
+  const dashboard = context.dashboard || null;
+  const dataNotice = context.cachedLogs
+    ? "PERINGATAN: LOG DI BAWAH ADALAH CACHE TERAKHIR SAAT ROUTER MASIH TERHUBUNG, BUKAN DATA LIVE."
+    : "";
+  const activeConnections = Array.isArray(dashboard?.ppp?.active)
+    ? dashboard.ppp.active.length
+    : null;
+  const routerStatus = dashboard?.router
+    ? [
+        `Router: ${dashboard.router.identity || "-"}`,
+        `RouterOS: ${dashboard.router.routerOs || "-"}`,
+        `CPU load: ${dashboard.router.cpuLoad ?? "-"}%`,
+        `Uptime: ${dashboard.router.uptime || "-"}`,
+        `Active PPP connections: ${activeConnections ?? "-"}`,
+      ].join(" | ")
+    : "- Tidak diminta atau data status router tidak tersedia.";
   const eventText = events.length
     ? events
         .map(
@@ -249,7 +306,7 @@ function formatNetraContext(context) {
         .join("\n")
     : "- Tidak diminta atau tidak ada data interface.";
 
-  return `KONTEKS NETRA TERBARU\nINCIDENT:\n${eventText}\nLOG TERBARU:\n${logText}\nPPP SECRET:\n${pppText}\nINTERFACE LIVE:\n${interfaceText}`;
+  return `KONTEKS NETRA TERBARU\n${dataNotice}\nSTATUS ROUTER:\n${routerStatus}\nINCIDENT:\n${eventText}\nLOG TERBARU:\n${logText}\nPPP SECRET:\n${pppText}\nINTERFACE LIVE:\n${interfaceText}`;
 }
 
 function cleanRouterAnswer(answer) {
@@ -285,16 +342,57 @@ client.on("messageCreate", async (message) => {
 
   try {
     await message.channel.sendTyping();
-    const data = await fetchNetraAlerts();
-    const wantsLogs = /log|catatan|login|logout|aktivitas/i.test(question);
-    const wantsPPP = /ppp|secret|akun|pelanggan|user/i.test(question);
+    const wantsLogs =
+      /log|catatan|login|logout|aktivitas|uptime|reboot|restart|startup|boot|shutdown|mati|down|offline/i.test(
+        question,
+      );
+    const wantsPPP =
+      /ppp|secret|akun|pelanggan|user|active connection|koneksi aktif|koneksi online|user online/i.test(
+        question,
+      );
+    const wantsDashboard =
+      /cpu|load|resource|memory|ram|uptime|reboot|restart|startup|boot|shutdown|mati|router|active connection|koneksi aktif|koneksi online|user online/i.test(
+        question,
+      );
     const wantsInterfaces =
       /interface|ether|uplink|bridge|vlan|port|link/i.test(question);
+    const wantsNetworkContext =
+      wantsLogs ||
+      wantsPPP ||
+      wantsInterfaces ||
+      /alert|notice|insiden|anomali|router|mikrotik|jaringan|internet|koneksi|offline/i.test(
+        question,
+      );
+    let data = { events: [] };
+    let cachedLogs = false;
+
+    if (wantsNetworkContext) {
+      try {
+        data = await fetchNetraAlerts();
+      } catch (error) {
+        if (!wantsLogs || lastNetraLogs.length === 0) throw error;
+        cachedLogs = true;
+      }
+    }
+
+    let logs = [];
+    if (wantsLogs) {
+      try {
+        logs = (await fetchNetraLogs()).slice(0, 10);
+      } catch (error) {
+        if (lastNetraLogs.length === 0) throw error;
+        logs = lastNetraLogs.slice(0, 10);
+        cachedLogs = true;
+      }
+    }
+
     const context = {
       events: data.events?.slice(0, 10),
-      logs: wantsLogs ? (await fetchNetraLogs()).slice(0, 10) : [],
+      logs,
+      cachedLogs,
       pppSecrets: wantsPPP ? await fetchNetraPPPSecrets() : [],
       interfaces: wantsInterfaces ? await fetchNetraInterfaces() : [],
+      dashboard: wantsDashboard ? await fetchNetraDashboard() : null,
     };
     const answer = await askRouter(message.channelId, question, context);
     const history = conversations.get(message.channelId) || [];
@@ -330,4 +428,4 @@ if (!ROUTER_API_KEY) {
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN);
+loadNetraCache().finally(() => client.login(process.env.DISCORD_TOKEN));

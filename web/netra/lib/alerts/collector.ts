@@ -1,4 +1,4 @@
-import { getAlertSnapshot } from "@/lib/mikrotik/client";
+import { getAlertSnapshot, getRouterLogs } from "@/lib/mikrotik/client";
 import {
   loadAlertState,
   saveAlertState,
@@ -12,7 +12,7 @@ export type AlertEvent = {
   title: string;
   detail: string;
   severity: AlertSeverity;
-  source: "PPP" | "Interface" | "IP audit";
+  source: "PPP" | "Interface" | "IP audit" | "Router";
   createdAt: string;
   fingerprint: string;
 };
@@ -39,6 +39,10 @@ declare global {
   var netraAlertCollection:
     | ReturnType<typeof collectAlertEventsInternal>
     | undefined;
+  // eslint-disable-next-line no-var
+  var netraRouterLogBaselineReady: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var netraRouterEventsCleaned: boolean | undefined;
 }
 
 function isTrue(value: unknown) {
@@ -59,11 +63,67 @@ function addEvent(
   state.events = state.events.slice(0, 100);
 }
 
-async function collectAlertEventsInternal() {
+function collectRouterAvailabilityEvents(
+  state: AlertState,
+  rawLogs: Array<Record<string, unknown>>,
+) {
+  const fingerprints = new Set(state.routerLogFingerprints || []);
+
+  for (const rawLog of rawLogs) {
+    const topics = String(rawLog.topics || "").toLowerCase();
+    const message = String(rawLog.message || "");
+    const logText = `${topics} ${message}`;
+    const matchesAvailabilityEvent =
+      /reboot|restart|startup|shutdown|watchdog|brownout|power|ups|routeros.*start|system.*start/i.test(
+        logText,
+      );
+
+    if (!matchesAvailabilityEvent || !message) continue;
+
+    const fingerprint = `${rawLog.time || ""}|${topics}|${message}`;
+    if (fingerprints.has(fingerprint)) continue;
+    fingerprints.add(fingerprint);
+
+    const powerEvent = /brownout|power|ups/i.test(logText);
+    addEvent(state, {
+      fingerprint: `router-availability:${fingerprint}`,
+      title: powerEvent
+        ? "Indikasi gangguan power MikroTik"
+        : "Reboot/startup MikroTik terdeteksi",
+      detail: message,
+      severity: "critical",
+      source: "Router",
+    });
+  }
+
+  state.routerLogFingerprints = Array.from(fingerprints).slice(-500);
+}
+
+async function collectAlertSnapshot() {
   const { interfaces: rawInterfaces, users: rawUsers } =
     await getAlertSnapshot();
+  const rawLogs = (await getRouterLogs()) as Array<Record<string, unknown>>;
   globalThis.netraAlertState ??= await loadAlertState();
   const state = globalThis.netraAlertState;
+
+  if (!globalThis.netraRouterEventsCleaned) {
+    state.events = state.events.filter(
+      (event) => !event.fingerprint.startsWith("router-availability:"),
+    );
+    globalThis.netraRouterEventsCleaned = true;
+  }
+
+  if (globalThis.netraRouterLogBaselineReady) {
+    collectRouterAvailabilityEvents(state, rawLogs);
+  } else {
+    state.routerLogFingerprints = rawLogs
+      .map(
+        (rawLog) =>
+          `${rawLog.time || ""}|${String(rawLog.topics || "").toLowerCase()}|${rawLog.message || ""}`,
+      )
+      .slice(-500);
+    globalThis.netraRouterLogBaselineReady = true;
+  }
   const nextInterfaces: Record<string, string> = {};
   const nextPPP: Record<string, string> = {};
   const baselineReady = state.baselineReady === true;
@@ -225,6 +285,65 @@ async function collectAlertEventsInternal() {
     events: state.events,
     newEvents: state.events.filter((event) => !knownEventIds.has(event.id)),
   };
+}
+
+async function collectAlertEventsInternal() {
+  globalThis.netraAlertState ??= await loadAlertState();
+  const state = globalThis.netraAlertState;
+  const knownEventIds = new Set(state.events.map((event) => event.id));
+
+  try {
+    const result = await collectAlertSnapshot();
+
+    state.routerFailureStreak = 0;
+    state.routerSuccessStreak = (state.routerSuccessStreak || 0) + 1;
+
+    if (state.routerOnline === false && state.routerSuccessStreak >= 2) {
+      addEvent(state, {
+        fingerprint: `router:online:${Date.now()}`,
+        title: "Router kembali online",
+        detail:
+          "Koneksi ke MikroTik kembali tersedia setelah sebelumnya offline.",
+        severity: "info",
+        source: "Router",
+      });
+      state.routerOnline = true;
+    }
+
+    if (state.routerOnline === undefined) {
+      state.routerOnline = true;
+    }
+    await saveAlertState(state);
+
+    return {
+      ...result,
+      events: state.events,
+      newEvents: state.events.filter((event) => !knownEventIds.has(event.id)),
+    };
+  } catch (error) {
+    state.routerSuccessStreak = 0;
+    state.routerFailureStreak = (state.routerFailureStreak || 0) + 1;
+
+    if (state.routerOnline === true && state.routerFailureStreak >= 3) {
+      addEvent(state, {
+        fingerprint: `router:offline:${Date.now()}`,
+        title: "Router offline",
+        detail:
+          "Koneksi ke MikroTik gagal. Periksa listrik, jaringan, dan service API RouterOS.",
+        severity: "critical",
+        source: "Router",
+      });
+      state.routerOnline = false;
+    }
+
+    await saveAlertState(state);
+
+    return {
+      initialized: false,
+      events: state.events,
+      newEvents: state.events.filter((event) => !knownEventIds.has(event.id)),
+    };
+  }
 }
 
 export async function collectAlertEvents() {

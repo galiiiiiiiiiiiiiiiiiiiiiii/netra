@@ -3,6 +3,31 @@ import { MikrotikAPI } from "@fibercom/routeros-api";
 let sharedClient: MikrotikAPI | undefined;
 let sharedConnection: Promise<MikrotikAPI> | undefined;
 let operationQueue = Promise.resolve();
+const OPERATION_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error("MikroTik request timed out")),
+      timeoutMs,
+    );
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+async function resetClient(client: MikrotikAPI) {
+  sharedClient = undefined;
+
+  try {
+    await withTimeout(client.close(), 1_000);
+  } catch {
+    // The stale socket is discarded even if RouterOS does not close cleanly.
+  }
+}
 
 export function createMikrotikClient() {
   sharedClient ??= new MikrotikAPI({
@@ -21,9 +46,12 @@ async function getConnectedClient() {
 
   if (client.connected) return client;
   if (!sharedConnection) {
-    sharedConnection = client
-      .connect()
+    sharedConnection = withTimeout(client.connect(), OPERATION_TIMEOUT_MS)
       .then(() => client)
+      .catch((error) => {
+        sharedClient = undefined;
+        throw error;
+      })
       .finally(() => {
         sharedConnection = undefined;
       });
@@ -39,10 +67,9 @@ export async function withMikrotikClient<T>(
     const client = await getConnectedClient();
 
     try {
-      return await operation(client);
+      return await withTimeout(operation(client), OPERATION_TIMEOUT_MS);
     } catch (error) {
-      if (client.connected) await client.close();
-      sharedClient = undefined;
+      await resetClient(client);
       throw error;
     }
   });
@@ -120,8 +147,8 @@ export async function getInterfaceTraffic() {
 
     for (const iface of interfaces as any[]) {
       const stats = await api.write("/interface/monitor-traffic", [
-        `=.id=${iface[".id"]}`,
-        "=once=",
+        `=interface=${iface.name}`,
+        "=once=yes",
       ]);
 
       const data = stats?.[0] || {};

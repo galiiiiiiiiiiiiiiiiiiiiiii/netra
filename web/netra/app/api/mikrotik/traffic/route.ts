@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { withMikrotikClient } from "@/lib/mikrotik/client";
+import { getTrafficHistory, startTrafficCollector } from "@/lib/traffic/store";
+
+if (process.env.NEXT_PHASE !== "phase-production-build") {
+  void startTrafficCollector();
+}
 
 export async function GET() {
   return withMikrotikClient(async (api) => {
@@ -47,6 +52,7 @@ export async function GET() {
       return NextResponse.json({
         success: true,
         interfaces: trafficInterfaces,
+        history: getTrafficHistory(),
       });
     } catch (error) {
       console.error("TRAFFIC API ERROR:", error);

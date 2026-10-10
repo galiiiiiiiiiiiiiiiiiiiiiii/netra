@@ -24,6 +24,18 @@ type IPConflict = {
   count: number;
 };
 
+function compareIPv4(left: string, right: string) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+
+  for (let index = 0; index < 4; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference;
+  }
+
+  return left.localeCompare(right);
+}
+
 export default function IPAuditPage() {
   const [users, setUsers] = useState<PPPUser[]>([]);
   const [poolIps, setPoolIps] = useState<string[]>([]);
@@ -97,7 +109,7 @@ export default function IPAuditPage() {
     const ips =
       poolIps.length > 0 ? poolIps : normalizedUsers.map((user) => user.ip!);
 
-    ips.forEach((ip) => {
+    [...new Set(ips)].sort(compareIPv4).forEach((ip) => {
       const user = map.get(ip);
 
       if (!user) {
