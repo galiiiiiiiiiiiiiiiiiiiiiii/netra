@@ -234,31 +234,61 @@ function numberToIPv4(value: number) {
 
 export async function getPPPIPPool() {
   return withMikrotikClient(async (api) => {
-    const secrets = await api.write("/ppp/secret/print");
-    const secretPoolNames = new Set(
-      (secrets as any[])
-        .map((secret) => String(secret["remote-address"] || "").trim())
-        .filter(Boolean),
-    );
-    const pools = await api.write("/ip/pool/print");
+    const [secrets, profiles, pools] = await Promise.all([
+      api.write("/ppp/secret/print"),
+      api.write("/ppp/profile/print").catch(() => []),
+      api.write("/ip/pool/print").catch(() => []),
+    ]);
+
+    const referencedPools = new Set<string>();
+    const staticIpNumbers: number[] = [];
+
+    for (const secret of secrets as any[]) {
+      const remoteAddr = String(secret["remote-address"] || "").trim();
+      if (!remoteAddr) continue;
+
+      const ipNum = ipv4ToNumber(remoteAddr);
+      if (ipNum !== null) {
+        staticIpNumbers.push(ipNum);
+      } else {
+        referencedPools.add(remoteAddr);
+      }
+    }
+
+    for (const profile of profiles as any[]) {
+      const remoteAddr = String(profile["remote-address"] || "").trim();
+      if (remoteAddr && ipv4ToNumber(remoteAddr) === null) {
+        referencedPools.add(remoteAddr);
+      }
+    }
+
     const addresses = new Set<string>();
 
     for (const pool of pools as any[]) {
-      if (!secretPoolNames.has(String(pool.name || "").trim())) {
-        continue;
-      }
-
+      const poolName = String(pool.name || "").trim();
       const ranges = String(pool.ranges || "").split(",");
+      const parsedRanges: Array<{ start: number; end: number }> = [];
 
       for (const range of ranges) {
         const [startIP, endIP = startIP] = range.trim().split("-");
         const start = ipv4ToNumber(startIP);
         const end = ipv4ToNumber(endIP);
 
-        if (start === null || end === null || end < start) {
-          continue;
+        if (start !== null && end !== null && end >= start) {
+          parsedRanges.push({ start, end });
         }
+      }
 
+      const isReferenced = referencedPools.has(poolName);
+      const containsStaticIp = parsedRanges.some(({ start, end }) =>
+        staticIpNumbers.some((ip) => ip >= start && ip <= end),
+      );
+
+      if (!isReferenced && !containsStaticIp) {
+        continue;
+      }
+
+      for (const { start, end } of parsedRanges) {
         for (let value = start; value <= end; value++) {
           addresses.add(numberToIPv4(value));
         }

@@ -24,16 +24,64 @@ type IPConflict = {
   count: number;
 };
 
-function compareIPv4(left: string, right: string) {
-  const leftParts = left.split(".").map(Number);
-  const rightParts = right.split(".").map(Number);
+function ipv4ToNumber(ip: string) {
+  const parts = ip.split(".").map(Number);
 
-  for (let index = 0; index < 4; index += 1) {
-    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
-    if (difference !== 0) return difference;
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return null;
+  }
+
+  return parts[0] * 256 ** 3 + parts[1] * 256 ** 2 + parts[2] * 256 + parts[3];
+}
+
+function numberToIPv4(value: number) {
+  return [
+    Math.floor(value / 256 ** 3) % 256,
+    Math.floor(value / 256 ** 2) % 256,
+    Math.floor(value / 256) % 256,
+    value % 256,
+  ].join(".");
+}
+
+function compareIPv4(left: string, right: string) {
+  const leftNum = ipv4ToNumber(left);
+  const rightNum = ipv4ToNumber(right);
+
+  if (leftNum !== null && rightNum !== null && leftNum !== rightNum) {
+    return leftNum - rightNum;
   }
 
   return left.localeCompare(right);
+}
+
+function buildIPPoolFromUsers(userIps: string[]) {
+  const groups = new Map<string, number[]>();
+
+  userIps.forEach((ip) => {
+    const num = ipv4ToNumber(ip);
+    if (num === null) return;
+
+    const prefix = ip.split(".").slice(0, 3).join(".");
+    const list = groups.get(prefix) || [];
+    list.push(num);
+    groups.set(prefix, list);
+  });
+
+  const generated: string[] = [];
+
+  groups.forEach((nums) => {
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+
+    for (let value = min; value <= max; value += 1) {
+      generated.push(numberToIPv4(value));
+    }
+  });
+
+  return generated;
 }
 
 export default function IPAuditPage() {
@@ -100,14 +148,18 @@ export default function IPAuditPage() {
 
     normalizedUsers.forEach((user) => {
       if (user.ip) {
-        map.set(user.ip, user);
+        const existing = map.get(user.ip);
+        if (!existing || String(user.status).toLowerCase() === "online") {
+          map.set(user.ip, user);
+        }
       }
     });
 
     const result: AuditIP[] = [];
+    const userIps = normalizedUsers.map((user) => user.ip!);
+    const inferredPoolIps = buildIPPoolFromUsers(userIps);
 
-    const ips =
-      poolIps.length > 0 ? poolIps : normalizedUsers.map((user) => user.ip!);
+    const ips = [...poolIps, ...inferredPoolIps, ...userIps];
 
     [...new Set(ips)].sort(compareIPv4).forEach((ip) => {
       const user = map.get(ip);
@@ -138,8 +190,8 @@ export default function IPAuditPage() {
   }, [normalizedUsers, poolIps]);
 
   const poolLabel =
-    poolIps.length > 0
-      ? `${poolIps[0]} — ${poolIps[poolIps.length - 1]}`
+    auditData.length > 0
+      ? `${auditData[0].ip} — ${auditData[auditData.length - 1].ip}`
       : "IP yang memiliki data PPP";
 
   const onlineCount = auditData.filter(
@@ -175,21 +227,37 @@ export default function IPAuditPage() {
   }, [normalizedUsers]);
 
   const gapData = useMemo(() => {
-    const usedIndexes = auditData
-      .filter((item) => item.status !== "EMPTY")
-      .map((item) => Number(item.ip.split(".").pop()));
+    const usedBoundsBySubnet = new Map<string, { min: number; max: number }>();
 
-    if (usedIndexes.length < 2) {
-      return [];
-    }
+    auditData.forEach((item) => {
+      if (item.status === "EMPTY") return;
 
-    const min = Math.min(...usedIndexes);
-    const max = Math.max(...usedIndexes);
+      const ipNum = ipv4ToNumber(item.ip);
+      if (ipNum === null) return;
+
+      const prefix = item.ip.split(".").slice(0, 3).join(".");
+      const current = usedBoundsBySubnet.get(prefix);
+
+      if (!current) {
+        usedBoundsBySubnet.set(prefix, { min: ipNum, max: ipNum });
+      } else {
+        current.min = Math.min(current.min, ipNum);
+        current.max = Math.max(current.max, ipNum);
+      }
+    });
 
     return auditData.filter((item) => {
-      const lastOctet = Number(item.ip.split(".").pop());
+      if (item.status !== "EMPTY") return false;
 
-      return item.status === "EMPTY" && lastOctet > min && lastOctet < max;
+      const ipNum = ipv4ToNumber(item.ip);
+      if (ipNum === null) return false;
+
+      const prefix = item.ip.split(".").slice(0, 3).join(".");
+      const bounds = usedBoundsBySubnet.get(prefix);
+
+      if (!bounds) return false;
+
+      return ipNum > bounds.min && ipNum < bounds.max;
     });
   }, [auditData]);
 
