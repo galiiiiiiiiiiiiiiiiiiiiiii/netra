@@ -248,6 +248,26 @@ async function askRouter(channelId, question, context) {
   );
 }
 
+function formatWIB(isoString) {
+  if (!isoString) return "waktu tidak tersedia";
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return String(isoString);
+  return (
+    new Intl.DateTimeFormat("id-ID", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+      .format(date)
+      .replace(/\./g, ":") + " WIB"
+  );
+}
+
 function formatNetraContext(context) {
   const events = Array.isArray(context.events) ? context.events : [];
   const logs = Array.isArray(context.logs) ? context.logs : [];
@@ -258,6 +278,7 @@ function formatNetraContext(context) {
     ? context.interfaces
     : [];
   const dashboard = context.dashboard || null;
+  const nowWIB = formatWIB(new Date().toISOString());
   const dataNotice = context.cachedLogs
     ? "PERINGATAN: LOG DI BAWAH ADALAH CACHE TERAKHIR SAAT ROUTER MASIH TERHUBUNG, BUKAN DATA LIVE."
     : "";
@@ -277,7 +298,7 @@ function formatNetraContext(context) {
     ? events
         .map(
           (event) =>
-            `- [${event.severity}] ${event.title}: ${event.detail} (${event.createdAt})`,
+            `- [${event.severity}] ${event.title}: ${event.detail} (${formatWIB(event.createdAt)})`,
         )
         .join("\n")
     : "- Tidak ada incident baru.";
@@ -306,7 +327,7 @@ function formatNetraContext(context) {
         .join("\n")
     : "- Tidak diminta atau tidak ada data interface.";
 
-  return `KONTEKS NETRA TERBARU\n${dataNotice}\nSTATUS ROUTER:\n${routerStatus}\nINCIDENT:\n${eventText}\nLOG TERBARU:\n${logText}\nPPP SECRET:\n${pppText}\nINTERFACE LIVE:\n${interfaceText}`;
+  return `KONTEKS NETRA TERBARU (Waktu sekarang: ${nowWIB})\n${dataNotice}\nSTATUS ROUTER:\n${routerStatus}\nINCIDENT:\n${eventText}\nLOG TERBARU:\n${logText}\nPPP SECRET:\n${pppText}\nINTERFACE LIVE:\n${interfaceText}`;
 }
 
 function cleanRouterAnswer(answer) {
