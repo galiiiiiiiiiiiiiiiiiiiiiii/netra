@@ -1166,10 +1166,15 @@ function Dashboard() {
 
         .dashboard-grid {
           display: grid;
-          grid-template-columns:
-            minmax(0, 1.6fr)
-            minmax(320px, 1fr);
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
           gap: 18px;
+          align-items: stretch;
+        }
+
+        .dashboard-grid > .panel {
+          width: 100%;
+          height: 100%;
+          margin: 0;
         }
 
         .traffic-layout {
