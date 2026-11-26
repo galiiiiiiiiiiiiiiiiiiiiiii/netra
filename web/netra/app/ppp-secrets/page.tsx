@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { downloadXlsx } from "@/lib/xlsx";
 import styles from "./ppp-secrets.module.css";
 
 type PPPSecret = {
@@ -86,6 +87,43 @@ export default function PPPSecretsPage() {
     );
   });
 
+  const handleExportXlsx = useCallback(() => {
+    if (visibleUsers.length === 0) return;
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const suffix = filter === "all" ? "all" : filter;
+    const headers = [
+      "No",
+      "Username",
+      "Status",
+      "Profile",
+      "IP Address",
+      "Caller ID",
+      "Uptime",
+      "Last Disconnect Reason",
+      "Comment",
+    ];
+
+    const rows = visibleUsers.map((user, index) => [
+      index + 1,
+      user.name || "-",
+      statusLabel(user.status || "offline"),
+      user.profile || "-",
+      user.ip || "-",
+      user.callerId || "-",
+      user.uptime || "-",
+      user.lastDisconnectReason || "-",
+      user.comment || "-",
+    ]);
+
+    downloadXlsx(
+      `ppp-secrets-${suffix}-${dateStr}.xlsx`,
+      "PPP Secrets",
+      headers,
+      rows,
+    );
+  }, [visibleUsers, filter]);
+
   return (
     <section className={styles.page}>
       <header className={styles.header}>
@@ -96,14 +134,24 @@ export default function PPPSecretsPage() {
             Daftar akun PPPoE dan status koneksi pelanggan.
           </p>
         </div>
-        <button
-          className={styles.refresh}
-          type="button"
-          onClick={() => loadUsers(true)}
-          disabled={refreshing}
-        >
-          {refreshing ? "Refreshing..." : "Refresh data"}
-        </button>
+        <div className={styles.actions}>
+          <button
+            className={styles.exportBtn}
+            type="button"
+            onClick={handleExportXlsx}
+            disabled={loading || visibleUsers.length === 0}
+          >
+            Export XLSX ({visibleUsers.length})
+          </button>
+          <button
+            className={styles.refresh}
+            type="button"
+            onClick={() => loadUsers(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? "Refreshing..." : "Refresh data"}
+          </button>
+        </div>
       </header>
 
       <div className={styles.stats}>
