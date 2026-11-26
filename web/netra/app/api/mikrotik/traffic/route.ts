@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isRequestAuthorized, unauthorizedResponse } from "@/lib/auth";
 import { withMikrotikClient } from "@/lib/mikrotik/client";
 import { getTrafficHistory, startTrafficCollector } from "@/lib/traffic/store";
 
@@ -6,7 +7,11 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
   void startTrafficCollector();
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isRequestAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   return withMikrotikClient(async (api) => {
     try {
       const interfaces = await api.write("/interface/print");

@@ -123,6 +123,9 @@ async function fetchNetraInterfaces() {
 async function fetchNetraDashboard() {
   const response = await fetch(NETRA_DASHBOARD_URL, {
     cache: "no-store",
+    headers: {
+      "x-netra-internal-secret": process.env.NETRA_INTERNAL_SECRET || "",
+    },
   });
 
   if (!response.ok) {

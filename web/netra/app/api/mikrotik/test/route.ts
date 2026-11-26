@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
+import { isRequestAuthorized, unauthorizedResponse } from "@/lib/auth";
 import { getRouterStatus } from "@/lib/mikrotik/client";
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isRequestAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const data = await getRouterStatus();
 

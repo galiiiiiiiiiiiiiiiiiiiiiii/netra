@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
+import { isRequestAuthorized, unauthorizedResponse } from "@/lib/auth";
 import { getPPPIPPool, getPPPStatus } from "@/lib/mikrotik/client";
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isRequestAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const [users, poolIps] = await Promise.all([
       getPPPStatus(),
